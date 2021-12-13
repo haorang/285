@@ -317,6 +317,9 @@ class EvalCallback(EventCallback):
         self.evaluations_results = []
         self.evaluations_timesteps = []
         self.evaluations_length = []
+        
+        self.evaluations_obs = []
+        self.evaluations_actions = []
 
     def _init_callback(self) -> None:
         # Does not work in some corner cases, where the wrapper is not the same
@@ -330,12 +333,11 @@ class EvalCallback(EventCallback):
             os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
 
     def _on_step(self) -> bool:
-
         if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
             # Sync training and eval env if there is VecNormalize
-            sync_envs_normalization(self.training_env, self.eval_env)
+            #sync_envs_normalization(self.training_env, self.eval_env)
 
-            episode_rewards, episode_lengths = evaluate_policy(
+            episode_rewards, episode_lengths, episode_actions, episode_obses = evaluate_policy(
                 self.model,
                 self.eval_env,
                 n_eval_episodes=self.n_eval_episodes,
@@ -349,11 +351,15 @@ class EvalCallback(EventCallback):
                 self.evaluations_timesteps.append(self.num_timesteps)
                 self.evaluations_results.append(episode_rewards)
                 self.evaluations_length.append(episode_lengths)
+                self.evaluations_results.append(episode_actions)
+                self.evaluations_length.append(episode_obses)
                 np.savez(
                     self.log_path,
                     timesteps=self.evaluations_timesteps,
                     results=self.evaluations_results,
                     ep_lengths=self.evaluations_length,
+                    actions=self.evaluations_actions,
+                    obs = self.evaluations_obs
                 )
 
             mean_reward, std_reward = np.mean(episode_rewards), np.std(episode_rewards)

@@ -1,18 +1,26 @@
 from typing import Any, Dict, Optional, Type, Union
 
+import time
 import numpy as np
 import torch as th
 from gym import spaces
 from torch.nn import functional as F
+import gym
 
 from stable_baselines3.common import logger
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import explained_variance, get_schedule_fn
+from stable_baselines3.common.base_class import BaseAlgorithm
+from stable_baselines3.common.buffers import RolloutBuffer
+from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.utils import safe_mean
+from stable_baselines3.common.vec_env import VecEnv
+from collections import deque
+from logger import Logger
 
-
-class PPO_CUSTOM(OnPolicyAlgorithm):
+class PPO_AIRL(OnPolicyAlgorithm):
     """
     Proximal Policy Optimization algorithm (PPO) (clip version)
 
@@ -88,9 +96,10 @@ class PPO_CUSTOM(OnPolicyAlgorithm):
         device: Union[th.device, str] = "auto",
         metaworld_flag: bool = False,
         _init_setup_model: bool = True,
+        reward_model=None
     ):
 
-        super(PPO_CUSTOM, self).__init__(
+        super(PPO_AIRL, self).__init__(
             policy,
             env,
             learning_rate=learning_rate,
@@ -117,12 +126,13 @@ class PPO_CUSTOM(OnPolicyAlgorithm):
         self.clip_range = clip_range
         self.clip_range_vf = clip_range_vf
         self.target_kl = target_kl
+        self.reward_model = reward_model
 
         if _init_setup_model:
             self._setup_model()
 
     def _setup_model(self) -> None:
-        super(PPO_CUSTOM, self)._setup_model()
+        super(PPO_AIRL, self)._setup_model()
 
         # Initialize schedules for policy/value clipping
         self.clip_range = get_schedule_fn(self.clip_range)
@@ -147,9 +157,10 @@ class PPO_CUSTOM(OnPolicyAlgorithm):
         entropy_losses, all_kl_divs = [], []
         pg_losses, value_losses = [], []
         clip_fractions = []
-
+        print("DOING TRAINING")
         # train for n_epochs epochs
         for epoch in range(self.n_epochs):
+            print("TRAINING EPOCH", epoch)
             approx_kl_divs = []
             # Do a complete pass on the rollout buffer
             for rollout_data in self.rollout_buffer.get(self.batch_size):
@@ -169,10 +180,11 @@ class PPO_CUSTOM(OnPolicyAlgorithm):
                 # Normalize advantage
                 advantages = rollout_data.advantages
                 advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                
 
                 # ratio between old and new policy, should be one at the first iteration
                 ratio = th.exp(log_prob - rollout_data.old_log_prob)
-
+                
                 # clipped surrogate loss
                 policy_loss_1 = advantages * ratio
                 policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
@@ -206,7 +218,7 @@ class PPO_CUSTOM(OnPolicyAlgorithm):
                 entropy_losses.append(entropy_loss.item())
 
                 loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
-
+                
                 # Optimization step
                 self.policy.optimizer.zero_grad()
                 loss.backward()
@@ -240,8 +252,186 @@ class PPO_CUSTOM(OnPolicyAlgorithm):
         if self.clip_range_vf is not None:
             logger.record("train/clip_range_vf", clip_range_vf)
 
+    def collect_rollouts_airl(
+        self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, n_rollout_steps: int
+    ) -> bool:
+        """
+        Collect experiences using the current policy and fill a ``RolloutBuffer``.
+        The term rollout here refers to the model-free notion and should not
+        be used with the concept of rollout used in model-based RL or planning.
+
+        :param env: The training environment
+        :param callback: Callback that will be called at each step
+            (and at the beginning and end of the rollout)
+        :param rollout_buffer: Buffer to fill with rollouts
+        :param n_steps: Number of experiences to collect per environment
+        :return: True if function returned with at least `n_rollout_steps`
+            collected, False if callback terminated rollout prematurely.
+        """
+        print("--------- collect rollouts start ----------")
+        assert self._last_obs is not None, "No previous observation was provided"
+        n_steps = 0
+        rollout_buffer.reset()
+        # Sample new weights for the state dependent exploration
+        if self.use_sde:
+            self.policy.reset_noise(env.num_envs)
+    
+        callback.on_rollout_start()
+        while n_steps < n_rollout_steps:
+            if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
+                # Sample a new noise matrix
+                self.policy.reset_noise(env.num_envs)
             
+            
+            with th.no_grad():
+                # Convert to pytorch tensor
+                obs_tensor = th.as_tensor(self._last_obs).to(self.device)
+                actions, values, log_probs = self.policy.forward(obs_tensor)
+            #print("obs tensor", obs_tensor)
+
+            sas = th.cat((obs_tensor, actions), 1)
+            actions = actions.cpu().numpy()
+           # print("obs_tensor, actions", obs_tensor.shape, actions.shape, n_steps)
+           # print(n_rollout_steps)
+          #  print("actions, n_steps", actions, n_steps)
+            # Rescale and perform action
+            clipped_actions = actions
+            # Clip the actions to avoid out of bound error
+            if isinstance(self.action_space, spaces.Box):
+                clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
+            #print("clipped actions", clipped_actions)
+            new_obs, gt_rewards, dones, infos = env.step(clipped_actions)
+            
+
+            # get logits
+            
+          #  print(" ***** Collecting Rollouts, r_hat")
+            
+            r_hat = self.reward_model.r_hat_batch(sas)
+            # r_hat1 = r_hat1.sum(axis=1)
+            # r_hat2 = r_hat2.sum(axis=1)
+            # r_hat = torch.cat([r_hat1, r_hat2], axis=-1)
+          #  print("max val of r hat", np.max(r_hat))
+           # print("min val of r hat", np.min(r_hat))
+            rewards = r_hat
+            #rewards = np.log(r_hat + 1e-8) - np.log(1 - r_hat + 1e-8)
+            
+            self.num_timesteps += env.num_envs
+            
+            # custome log
+            num_dones = int(sum(dones))
+            if num_dones > 0:
+                if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
+                    ep_reward, ep_success = [], []
+                    for idx, info in enumerate(infos):
+                        maybe_ep_info = info.get("episode")
+                        if maybe_ep_info is not None:
+                            ep_reward.append(maybe_ep_info["r"])
+                            if self.metaworld_flag:
+                                ep_success.append(maybe_ep_info["s"])
+
+                    self.custom_logger.log('eval/episode_reward', np.mean(ep_reward), self.num_timesteps)
+                    self.custom_logger.log('eval/true_episode_reward', np.mean(ep_reward), self.num_timesteps)
+                    if self.metaworld_flag:
+                        self.custom_logger.log('eval/true_episode_success', np.mean(ep_success), self.num_timesteps)
+                    self.custom_logger.dump(self.num_timesteps)
+                    
+            # Give access to local variables
+            callback.update_locals(locals())
+            if callback.on_step() is False:
+                return False
+            
+            self._update_info_buffer(infos)
+            n_steps += 1
+
+            if isinstance(self.action_space, spaces.Discrete):
+                # Reshape in case of discrete action
+                actions = actions.reshape(-1, 1)
+            rewards = rewards.reshape(-1)
+            #print("rewards", rewards)
+            rollout_buffer.add(self._last_obs, actions, rewards, self._last_dones, values, log_probs)
+            
+            # SAVE DEMONSTRATIONS
+            self._last_obs = new_obs
+            self._last_dones = dones
+
+        with th.no_grad():
+            # Compute value for the last timestep
+            obs_tensor = th.as_tensor(new_obs).to(self.device)
+            _, values, _ = self.policy.forward(obs_tensor)
+
+        rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)        
+       # print("rol out buf shapes", rollout_buffer.observations.shape, rollout_buffer.actions.shape, rollout_buffer.rewards.shape)
         
+        callback.on_rollout_end()
+        return True
+    
+        
+    def learn_airl(
+        self,
+        total_timesteps: int,
+        callback: MaybeCallback = None,
+        log_interval: int = 1,
+        eval_env: Optional[GymEnv] = None,
+        eval_freq: int = -1,
+        n_eval_episodes: int = 5,
+        tb_log_name: str = "OnPolicyAlgorithm",
+        eval_log_path: Optional[str] = None,
+        reset_num_timesteps: bool = True,
+        do_setup = False,
+    ) -> "OnPolicyAlgorithm":
+        iteration = 0
+
+        if do_setup:
+            total_timesteps, callback = self._setup_learn(
+                total_timesteps, eval_env, callback, eval_freq, n_eval_episodes, eval_log_path, reset_num_timesteps, tb_log_name
+            )
+
+        self.eval_log_path = eval_log_path
+
+        callback.on_training_start(locals(), globals())
+        self.num_timesteps = 0
+        
+        while self.num_timesteps < total_timesteps:
+           # print("learn airl self num timesteps", self.num_timesteps)
+            continue_training = self.collect_rollouts_airl(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps)
+            if continue_training is False:
+                break
+
+            iteration += 1
+            self._update_current_progress_remaining(self.num_timesteps, total_timesteps)
+
+            # Display training infos
+            if log_interval is not None and iteration % log_interval == 0:
+                fps = int(self.num_timesteps / (time.time() - self.start_time))
+                logger.record("time/iterations", iteration, exclude="tensorboard")
+                if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
+                    logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
+                    logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
+                    self.custom_logger.log('train/episode_reward', 
+                        safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]), 
+                        self.num_timesteps)
+                    
+                    self.custom_logger.log('train/true_episode_reward', 
+                        safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]), 
+                        self.num_timesteps)
+                    
+                    if self.metaworld_flag:
+                        logger.record("rollout/ep_success_mean", safe_mean([ep_info["s"] for ep_info in self.ep_info_buffer]))
+                        self.custom_logger.log('train/true_episode_success', 
+                            safe_mean([ep_info["s"] for ep_info in self.ep_info_buffer]), 
+                            self.num_timesteps)
+                    self.custom_logger.dump(self.num_timesteps)
+                logger.record("time/fps", fps)
+                logger.record("time/time_elapsed", int(time.time() - self.start_time), exclude="tensorboard")
+                logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
+                logger.dump(step=self.num_timesteps)
+
+            self.train()
+
+        callback.on_training_end()
+
+        return self
     
     def learn(
         self,
@@ -251,12 +441,12 @@ class PPO_CUSTOM(OnPolicyAlgorithm):
         eval_env: Optional[GymEnv] = None,
         eval_freq: int = -1,
         n_eval_episodes: int = 5,
-        tb_log_name: str = "PPO_CUSTOM",
+        tb_log_name: str = "PPO_AIRL",
         eval_log_path: Optional[str] = None,
         reset_num_timesteps: bool = True,
-    ) -> "PPO_CUSTOM":
+    ) -> "PPO_AIRL":
         
-        return super(PPO_CUSTOM, self).learn(
+        return super(PPO_AIRL, self).learn(
             total_timesteps=total_timesteps,
             callback=callback,
             log_interval=log_interval,

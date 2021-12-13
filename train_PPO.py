@@ -33,6 +33,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", type=str, default="dog_walk", help="environment ID")
     parser.add_argument("-tb", "--tensorboard-log", help="Tensorboard log dir", default="logs/PPO/", type=str)
+    parser.add_argument("--eval-dir", type=str, default="logs/PPO/eval/", help="eval dir")
+
     parser.add_argument("--seed", help="Random generator seed", type=int, default=123)
     parser.add_argument("--n-envs", help="# of parallel environments", type=int, default=16)
     parser.add_argument("--n-steps", help="# of steps to run for each environment per update", type=int, default=500)
@@ -89,8 +91,17 @@ if __name__ == "__main__":
             n_envs=args.n_envs, 
             monitor_dir=args.tensorboard_log,
             seed=args.seed)
+        eval_env = make_vec_metaworld_env(
+            args.env, 
+            n_envs=args.n_envs, 
+            seed=args.seed)
     else:
         env = make_vec_dmcontrol_env(    
+            args.env, 
+            n_envs=args.n_envs, 
+            monitor_dir=args.tensorboard_log,
+            seed=args.seed)
+        eval_env = make_vec_dmcontrol_env(    
             args.env, 
             n_envs=args.n_envs, 
             monitor_dir=args.tensorboard_log,
@@ -127,4 +138,4 @@ if __name__ == "__main__":
         ordered_args = OrderedDict([(key, vars(args)[key]) for key in sorted(vars(args).keys())])
         yaml.dump(ordered_args, f)
     
-    model.learn(total_timesteps=args.total_timesteps)
+    model.learn(total_timesteps=args.total_timesteps, eval_log_path=args.eval_dir)

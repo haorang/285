@@ -50,6 +50,7 @@ def evaluate_policy(
         list containing per-episode rewards and second containing per-episode lengths
         (in number of steps).
     """
+    print("*** IN EVALUATE POLICY ***")
     is_monitor_wrapped = False
     # Avoid circular import
     from stable_baselines3.common.env_util import is_wrapped
@@ -69,7 +70,7 @@ def evaluate_policy(
             UserWarning,
         )
 
-    episode_rewards, episode_lengths = [], []
+    episode_rewards, episode_lengths, episode_actions, episode_obses = [], [], [], []
     not_reseted = True
     while len(episode_rewards) < n_eval_episodes:
         # Number of loops here might differ from true episodes
@@ -81,8 +82,12 @@ def evaluate_policy(
         done, state = False, None
         episode_reward = 0.0
         episode_length = 0
+        episode_action = []
+        episode_obs = []
         while not done:
             action, state = model.predict(obs, state=state, deterministic=deterministic)
+            episode_obs.append(obs)
+            episode_action.append(action)
             obs, reward, done, info = env.step(action)
             episode_reward += reward
             if callback is not None:
@@ -92,6 +97,8 @@ def evaluate_policy(
                 env.render()
 
         if is_monitor_wrapped:
+            print("MONITOR WRAPPED")
+
             # Do not trust "done" with episode endings.
             # Remove vecenv stacking (if any)
             if isinstance(env, VecEnv):
@@ -102,6 +109,9 @@ def evaluate_policy(
                 episode_rewards.append(info["episode"]["r"])
                 episode_lengths.append(info["episode"]["l"])
         else:
+            print("appending info from %d eval episode" % len(episode_rewards))
+            episode_actions.append(episode_action)
+            episode_obses.append(episode_obs)
             episode_rewards.append(episode_reward)
             episode_lengths.append(episode_length)
 
@@ -111,4 +121,5 @@ def evaluate_policy(
         assert mean_reward > reward_threshold, "Mean reward below threshold: " f"{mean_reward:.2f} < {reward_threshold:.2f}"
     if return_episode_rewards:
         return episode_rewards, episode_lengths
-    return mean_reward, std_reward
+    # added return actions and obses
+    return mean_reward, std_reward, episode_actions, episode_obses

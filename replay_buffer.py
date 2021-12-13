@@ -123,3 +123,11 @@ class ReplayBuffer(object):
         full_obs = torch.as_tensor(full_obs, device=self.device)
         
         return obses, full_obs, actions, rewards, next_obses, not_dones, not_dones_no_max
+    
+    def update_log_probs(self, policy, device):
+        for i in range(self.capacity):
+            with torch.no_grad():
+                obs_tensor = torch.as_tensor(self.obses[i]).to(device)
+                actions, values, log_probs = policy.forward(obs_tensor.reshape(1, -1))
+                np.copyto(self.rewards[self.idx], log_probs.cpu().numpy()[:,np.newaxis])
+

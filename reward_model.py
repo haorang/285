@@ -244,7 +244,9 @@ class RewardModel:
 
     def r_hat_member(self, x, member=-1):
         # the network parameterizes r hat in eqn 1 from the paper
-        return self.ensemble[member](torch.from_numpy(x).float().to(device))
+        if isinstance(x, np.ndarray):
+            x = torch.from_numpy(x).float().to(device)
+        return self.ensemble[member](x)
 
     def r_hat(self, x):
         # they say they average the rewards from each member of the ensemble, but I think this only makes sense if the rewards are already normalized
@@ -597,6 +599,79 @@ class RewardModel:
             self.put_queries(sa_t_1, sa_t_2, labels)
         
         return len(labels)
+    
+    def train_reward_airl(self, expert_buffer, policy_buffer):
+        ensemble_losses = [[] for _ in range(self.de)]
+        ensemble_acc = np.array([0 for _ in range(self.de)])
+        
+        max_len = policy_buffer.capacity
+        total_batch_index = []
+        for _ in range(self.de):
+            total_batch_index.append(np.random.permutation(max_len))
+        
+        num_epochs = int(np.ceil(max_len/self.train_batch_size))
+
+        list_debug_loss1, list_debug_loss2 = [], []
+        total = 0
+        
+        for epoch in range(num_epochs):
+            self.opt.zero_grad()
+            loss = 0.0
+            
+            last_index = (epoch+1)*self.train_batch_size
+            if last_index > max_len:
+                last_index = max_len
+                
+            for member in range(self.de):
+                
+                idxs = total_batch_index[member][epoch*self.train_batch_size:last_index]
+                #print(len(idxs))
+                sa_t_1 = self.buffer_seg1[idxs]
+                sa_t_2 = self.buffer_seg2[idxs]
+                labels = self.buffer_label[idxs]
+                labels = torch.from_numpy(labels.flatten()).long().to(device)
+                
+                # Get the samples of expert/our policy
+                exp_obs, exp_acs, exp_probs, _, _, _ = expert_buffer.sample(self.train_batch_size)
+                pol_obs, pol_acs, pol_probs, _, _, _ = policy_buffer.sample(self.train_batch_size)
+                
+                #print(exp_obs.device, exp_acs.device, exp_probs.device)
+                exp_sa = torch.cat((exp_obs, exp_acs), 1)
+                pol_sa = torch.cat((pol_obs, pol_acs), 1)
+                #print("---------", exp_sa.shape, pol_sa.shape, sa_t_1.shape, sa_t_2.shape)
+                
+                #sa_t_exp = 
+                #sa_t_pol = 
+                if member == 0:
+                    total += pol_obs.shape[0]
+                
+                # get logits
+                r_hat_exp = self.r_hat_member(exp_sa, member=member) - exp_probs
+                r_hat_pol = self.r_hat_member(pol_sa, member=member) - pol_probs
+                # r_hat1 = r_hat1.sum(axis=1)
+                # r_hat2 = r_hat2.sum(axis=1)
+                
+                # r_hat = torch.cat([r_hat1, r_hat2], axis=-1)
+                loss_pi = F.logsigmoid(-r_hat_pol)
+                loss_exp = F.logsigmoid(r_hat_exp)
+                loss_disc = (-loss_exp - loss_exp).mean()
+                
+                # compute loss
+#                 curr_loss = self.CEloss(r_hat, labels)
+                loss += loss_disc
+                ensemble_losses[member].append(loss_disc.item())
+                
+                # compute acc
+                # _, predicted = torch.max(r_hat.data, 1)
+                # correct = (predicted == labels).sum().item()
+                # ensemble_acc[member] += correct
+                
+            loss.backward()
+            self.opt.step()
+        
+#         ensemble_acc = ensemble_acc / total
+        
+        return ensemble_acc
     
     def train_reward(self):
         ensemble_losses = [[] for _ in range(self.de)]

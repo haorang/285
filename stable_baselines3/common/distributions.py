@@ -578,6 +578,8 @@ class StateDependentNoiseDistribution(Distribution):
         latent_sde = latent_sde if self.learn_features else latent_sde.detach()
         # Default case: only one exploration matrix
         if len(latent_sde) == 1 or len(latent_sde) != len(self.exploration_matrices):
+            if (self.exploration_mat.device != latent_sde.device):
+                self.exploration_mat = self.exploration_mat.to(latent_sde.device)
             return th.mm(latent_sde, self.exploration_mat)
         # Use batch matrix multiplication for efficient computation
         # (batch_size, n_features) -> (batch_size, 1, n_features)

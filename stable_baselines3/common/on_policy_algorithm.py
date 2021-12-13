@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Tuple, Type, Union
 import gym
 import numpy as np
 import torch as th
+import os
 
 from stable_baselines3.common import logger
 from stable_baselines3.common.base_class import BaseAlgorithm
@@ -165,7 +166,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 obs_tensor = th.as_tensor(self._last_obs).to(self.device)
                 actions, values, log_probs = self.policy.forward(obs_tensor)
             actions = actions.cpu().numpy()
-
+            print("obs_tensor, actions", obs_tensor.shape, actions.shape, n_steps)
             # Rescale and perform action
             clipped_actions = actions
             # Clip the actions to avoid out of bound error
@@ -197,7 +198,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             callback.update_locals(locals())
             if callback.on_step() is False:
                 return False
-
+            
             self._update_info_buffer(infos)
             n_steps += 1
 
@@ -205,6 +206,8 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 # Reshape in case of discrete action
                 actions = actions.reshape(-1, 1)
             rollout_buffer.add(self._last_obs, actions, rewards, self._last_dones, values, log_probs)
+            
+            # SAVE DEMONSTRATIONS
             self._last_obs = new_obs
             self._last_dones = dones
 
@@ -214,7 +217,17 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             _, values, _ = self.policy.forward(obs_tensor)
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
-
+        print("num timesteps", self.num_timesteps)
+        print("*********** SAVING *******************")
+        np.savez(os.path.join(self.eval_log_path, "rollout_%d.npz" % self.num_timesteps), 
+                 obs = rollout_buffer.observations,
+                 acs = rollout_buffer.actions,
+                 rews = rollout_buffer.rewards,
+                 dones = rollout_buffer.dones)
+            
+        
+        print("rol out buf shapes", rollout_buffer.observations.shape, rollout_buffer.actions.shape, rollout_buffer.rewards.shape)
+        
         callback.on_rollout_end()
 
         return True
@@ -243,12 +256,14 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         total_timesteps, callback = self._setup_learn(
             total_timesteps, eval_env, callback, eval_freq, n_eval_episodes, eval_log_path, reset_num_timesteps, tb_log_name
         )
+                     
+        self.eval_log_path = eval_log_path
 
         callback.on_training_start(locals(), globals())
 
         while self.num_timesteps < total_timesteps:
             continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps)
-            
+            print("self num timesteps", self.num_timesteps)
             if continue_training is False:
                 break
 

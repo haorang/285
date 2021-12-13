@@ -321,7 +321,7 @@ class BaseAlgorithm(ABC):
                 n_eval_episodes=n_eval_episodes,
             )
             callback = CallbackList([callback, eval_callback])
-
+            print("Added EVAL CALLBACK eval freq %d path %s" % (eval_freq, log_path))
         callback.init_callback(self)
         return callback
 

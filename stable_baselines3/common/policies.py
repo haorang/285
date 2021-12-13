@@ -117,6 +117,8 @@ class BaseModel(nn.Module, ABC):
         """
         assert self.features_extractor is not None, "No features extractor was set"
         preprocessed_obs = preprocess_obs(obs, self.observation_space, normalize_images=self.normalize_images)
+        #print("extract_features obs", obs)
+        #print("preprocesses_obs", preprocessed_obs)       
         return self.features_extractor(preprocessed_obs)
 
     def _get_data(self) -> Dict[str, Any]:
@@ -553,8 +555,12 @@ class ActorCriticPolicy(BasePolicy):
         latent_pi, latent_vf, latent_sde = self._get_latent(obs)
         # Evaluate the values for the given observations
         values = self.value_net(latent_vf)
+        #print("policy forward latent_pi", latent_pi)
+        #print("policy forward latent_sde", latent_sde)
         distribution = self._get_action_dist_from_latent(latent_pi, latent_sde=latent_sde)
+        #print("policy forward distribution", distribution)
         actions = distribution.get_actions(deterministic=deterministic)
+        #print("policy forward actions", actions)
         log_prob = distribution.log_prob(actions)
         return actions, values, log_prob
 
